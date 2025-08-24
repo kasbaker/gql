@@ -104,8 +104,8 @@ setup(
         "all": install_all_requires,
         "test": install_all_requires + tests_requires,
         "test_no_transport": tests_requires,
-        "dev": install_all_requires + dev_requires,
-        "aiohttp": install_aiohttp_requires,
+        "dev": install_all_requires + dev_requires,  # requires python 3.10
+        "aiohttp": install_aiohttp_requires,  # requires python 3.8
         "requests": install_requests_requires,
         "httpx": install_httpx_requires,
         "websockets": install_websockets_requires,

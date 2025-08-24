@@ -1,7 +1,9 @@
 [project]
 name = "gql"
 readme = "README.md"
-requires-python = ">=3.8.1"
+requires-python = ">=3.9"
+# requires 3.9 https://github.com/aio-libs/aiohttp/tree/v3.11.2
+
 dynamic = ["authors", "classifiers", "dependencies", "description", "entry-points", "keywords", "license", "optional-dependencies", "scripts", "version"]
 
 [build-system]
