@@ -1,5 +1,6 @@
 import pytest
 from graphql import (
+    DirectiveLocation,
     FloatValueNode,
     GraphQLError,
     GraphQLFloat,
@@ -1306,9 +1307,7 @@ def test_executable_directives(ds, var):
         .on(ds.Character)
         .select(ds.Character.name, ds.Character.appearsIn)
         .directives(
-            DSLDirective("skip", **{"if": var.skipFrag}),  # built-in
-            DSLDirective("fragmentDefinition"),
-            schema=ds,  # custom
+            ds("@fragmentDefinition")
         )
     )
 
@@ -1317,37 +1316,35 @@ def test_executable_directives(ds, var):
         ds.Query.hero.args(episode=var.episode).select(
             # Field with both built-in and custom directives
             ds.Character.name.directives(
-                DSLDirective("skip", **{"if": var.skipName}),
-                DSLDirective("field"),  # implicit schema from DSLField
+                ds("@skip")(**{"if": var.skipName}),
+                ds("@field"),  # custom field directive
             ),
             # Field with repeated directives (same directive multiple times)
             ds.Character.appearsIn.directives(
-                DSLDirective("repeat", value="first"),
-                DSLDirective("repeat", value="second"),
-                DSLDirective("repeat", value="third"),
+                ds("@repeat")(value="first"),
+                ds("@repeat")(value="second"),
+                ds("@repeat")(value="third"),
             ),
             # Fragment spread with multiple directives
             fragment.spread().directives(
-                DSLDirective("include", **{"if": var.includeSpread}),
-                DSLDirective("fragmentSpread"),
-                schema=ds,
+                ds("@include")(**{"if": var.includeSpread}),
+                ds("@fragmentSpread"),
             ),
             # Inline fragment with directives
             DSLInlineFragment()
             .on(ds.Human)
             .select(ds.Human.homePlanet)
             .directives(
-                DSLDirective("skip", **{"if": var.skipInline}),
-                DSLDirective("inlineFragment"),
-                schema=ds,
+                ds("@skip")(**{"if": var.skipInline}),
+                ds("@inlineFragment"),
             ),
             # Meta field with directive
             DSLMetaField("__typename").directives(
-                DSLDirective("include", **{"if": var.includeType})
+                ds("@include")(**{"if": var.includeType})
             ),
         )
     ).directives(
-        DSLDirective("skip", **{"if": var.skipQuery}), DSLDirective("query"), schema=ds
+        ds("@query")
     )
 
     # Mutation with directives
@@ -1356,9 +1353,7 @@ def test_executable_directives(ds, var):
             episode=6, review={"stars": 5, "commentary": "Great!"}
         ).select(ds.Review.stars, ds.Review.commentary)
     ).directives(
-        DSLDirective("include", **{"if": var.allowMutation}),
-        DSLDirective("mutation"),
-        schema=ds,
+        ds("@mutation")
     )
 
     # Subscription with directives
@@ -1367,18 +1362,14 @@ def test_executable_directives(ds, var):
             ds.Review.stars, ds.Review.commentary
         )
     ).directives(
-        DSLDirective("skip", **{"if": var.skipSub}),
-        DSLDirective("subscription"),
-        schema=ds,
+        ds("@subscription")
     )
 
     # Variable definitions with directives
     var.episode.directives(
-        # Note that `$episode: Episode skip(if=$skipFrag)` is INVALID GraphQL because
+        # Note that `$episode: Episode @someDirective(value=$someValue)` is INVALID GraphQL because
         # variable definitions must be static, literal values defined in the query!
-        DSLDirective("skip", **{"if": True}),
-        DSLDirective("variableDefinition"),
-        schema=ds,
+        ds("@variableDefinition"),
     )
     query.variable_definitions = var
 
@@ -1430,10 +1421,10 @@ subscription ReviewSub @skip(if: $skipSub) @subscription {
     assert node_tree(doc.document) == node_tree(gql(expected).document)
 
 
-def test_directive_repr():
+def test_directive_repr(ds):
     """Test DSLDirective string representation"""
-    directive = DSLDirective("include", **{"if": True}, reason="testing")
-    expected = "<DSLDirective @include(if=True, reason='testing')>"
+    directive = ds("@include")(**{"if": True})
+    expected = "<DSLDirective @include(if=True)>"
     assert repr(directive) == expected
 
 
@@ -1445,41 +1436,107 @@ def test_directive_error_handling(ds):
 
     # Invalid directive name
     with pytest.raises(GraphQLError, match="Directive '@nonexistent' not found"):
-        ds.Query.hero.directives(DSLDirective("nonexistent"))
+        ds("@nonexistent")
 
     # Invalid directive argument
     with pytest.raises(KeyError, match="Argument 'invalid' does not exist"):
-        ds.Query.hero.directives(DSLDirective("include", invalid=True))
+        ds("@include")(invalid=True)
 
-    # Test unvalidated directive (covers line 309-312 in dsl.py)
-    unvalidated_directive = DSLDirective("include", **{"if": True})
-    with pytest.raises(GraphQLError, match="Directive '@include' definition not set"):
-        _ = unvalidated_directive.ast_directive
+    # Test directive location validation - try to use query directive on field
+    with pytest.raises(GraphQLError, match="Invalid directive location"):
+        ds.Query.hero.directives(ds("@query"))
 
 
-def test_custom_directive_requires_schema(ds):
-    """Test that custom directives require schema access"""
-    # Operations require explicit schema for custom directives
-    with pytest.raises(GraphQLError, match="Directive '@query' not found"):
-        DSLQuery(ds.Query.hero.select(ds.Character.name)).directives(
-            DSLDirective("query")
-        )
+# Parametrized tests for comprehensive directive location validation
+@pytest.fixture(
+    params=[
+        "@query",
+        "@mutation", 
+        "@subscription",
+        "@field",
+        "@fragmentDefinition",
+        "@fragmentSpread", 
+        "@inlineFragment",
+        "@variableDefinition",
+    ]
+)
+def directive_name(request):
+    return request.param
 
-    # Fragment definitions require explicit schema
-    with pytest.raises(GraphQLError, match="Directive '@fragmentDefinition' not found"):
-        DSLFragment("test").on(ds.Character).directives(
-            DSLDirective("fragmentDefinition")
-        )
 
-    # Works with explicit schema
-    DSLQuery(ds.Query.hero.select(ds.Character.name)).directives(
-        DSLDirective("query"), schema=ds
-    )
+@pytest.fixture(
+    params=[
+        (DSLQuery, "QUERY"),
+        (DSLMutation, "MUTATION"), 
+        (DSLSubscription, "SUBSCRIPTION"),
+        ("DSLField", "FIELD"),
+        ("DSLMetaField", "FIELD"),
+        (DSLFragment, "FRAGMENT_DEFINITION"),
+        ("DSLFragmentSpread", "FRAGMENT_SPREAD"),
+        (DSLInlineFragment, "INLINE_FRAGMENT"),
+        (DSLVariable, "VARIABLE_DEFINITION"),
+    ]
+)
+def dsl_class_and_location(request):
+    return request.param
 
-    # DSLField has implicit schema, so custom directives work
-    query = DSLQuery(
-        ds.Query.hero.select(
-            ds.Character.name.directives(DSLDirective("field"))  # implicit schema
-        )
-    )
-    assert query is not None
+
+@pytest.fixture
+def is_valid_combination(directive_name, dsl_class_and_location):
+    # Map directive names to their expected locations
+    directive_to_location = {
+        "@query": "QUERY",
+        "@mutation": "MUTATION",
+        "@subscription": "SUBSCRIPTION", 
+        "@field": "FIELD",
+        "@fragmentDefinition": "FRAGMENT_DEFINITION",
+        "@fragmentSpread": "FRAGMENT_SPREAD",
+        "@inlineFragment": "INLINE_FRAGMENT", 
+        "@variableDefinition": "VARIABLE_DEFINITION",
+    }
+    expected_location = directive_to_location[directive_name]
+    _, actual_location = dsl_class_and_location
+    return expected_location == actual_location
+
+
+def create_dsl_instance(dsl_class, ds):
+    """Helper function to create DSL instances for testing"""
+    if dsl_class == DSLQuery:
+        return DSLQuery(ds.Query.hero.select(ds.Character.name))
+    elif dsl_class == DSLMutation:
+        return DSLMutation(ds.Mutation.createReview.args(episode=6, review={"stars": 5}).select(ds.Review.stars))
+    elif dsl_class == DSLSubscription:
+        return DSLSubscription(ds.Subscription.reviewAdded.args(episode=6).select(ds.Review.stars))
+    elif dsl_class == "DSLField":
+        return ds.Query.hero
+    elif dsl_class == "DSLMetaField":
+        return DSLMetaField("__typename")
+    elif dsl_class == DSLFragment:
+        return DSLFragment("test").on(ds.Character).select(ds.Character.name)
+    elif dsl_class == "DSLFragmentSpread":
+        fragment = DSLFragment("test").on(ds.Character).select(ds.Character.name)
+        return fragment.spread()
+    elif dsl_class == DSLInlineFragment:
+        return DSLInlineFragment().on(ds.Human).select(ds.Human.homePlanet)
+    elif dsl_class == DSLVariable:
+        var = DSLVariableDefinitions()
+        return var.testVar
+    else:
+        raise ValueError(f"Unknown DSL class: {dsl_class}")
+
+
+def test_directive_location_validation(ds, directive_name, dsl_class_and_location, is_valid_combination):
+    """Test all 64 combinations of 8 directives × 8 DSL classes"""
+    dsl_class, _ = dsl_class_and_location
+    directive = ds(directive_name)
+    
+    # Create instance of DSL class and try to apply directive
+    instance = create_dsl_instance(dsl_class, ds)
+    
+    if is_valid_combination:
+        # Should work without error
+        instance.directives(directive)
+    else:
+        # Should raise GraphQLError for invalid location
+        with pytest.raises(GraphQLError, match="Invalid directive location"):
+            instance.directives(directive)
